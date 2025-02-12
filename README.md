@@ -1,6 +1,6 @@
 # Zephyr, A Links Development Tool
 
-Inspired by a piece of software I believe is called Air. It achieved the similar goal of Zephyr but instead for Go-lang web applications.
+Zephyr is a lightweight piece of software that live reloads a Links project. Inspired by a piece of software I believe is called Air. Zephyr aims to fill a similar role in the Links ecosystem.
 
 ## Notes
  + Requires geckodriver for Firefox.
