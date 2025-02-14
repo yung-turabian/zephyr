@@ -31,7 +31,7 @@ getopts('vh', \%opts) or abort();
 sub abort {print get_help_message();exit 1;}
 sub get_help_message {return "zephyr [-h or --help] [-v or --version] \n";}
 sub get_about_message {return "A live reload tool for Links development.\n";}
-if (defined $opts{v}) {VERSION_MESSAGE();}
+if (defined $opts{v}) {VERSION_MESSAGE();exit 1;}
 if (defined $opts{h}) {abort();}
 sub HELP_MESSAGE {print get_help_message();}
 sub VERSION_MESSAGE {print "Version $VERSION\n";}
