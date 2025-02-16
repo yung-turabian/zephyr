@@ -16,39 +16,52 @@
 
 use File::Find;
 use File::Basename;
+use File::Path qw( make_path );
 use strict;
 use warnings;
+use Getopt::Std; 
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+# External dependencies
 use Net::EmptyPort qw<check_port>;
+use Log::Log4perl;
 use Firefox::Marionette();
 use Try::Tiny;
-use Getopt::Std;
 
-$Getopt::Std::STANDARD_HELP_VERSION = 1;
+make_path(".zephyr");
+
+my $conf = q (
+		log4perl.category.Zephyr.Logger    = INFO, Logfile, Screen
+
+		log4perl.appender.Logfile          = Log::Log4perl::Appender::File
+		log4perl.appender.Logfile.filename = .zephyr/zephyr.log
+		log4perl.appender.Logfile.layout   = Log::Log4perl::Layout::PatternLayout
+    log4perl.appender.Logfile.layout.ConversionPattern = [%r] %F %L %m%n
+
+		log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
+		log4perl.appender.Screen.stderr  = 0
+		log4perl.appender.Screen.layout  = Log::Log4perl::Layout::SimpleLayout
+);
 
 our $VERSION = "0.0.2";
 my %opts;
-getopts('vh', \%opts) or abort();
+getopts('vhd', \%opts) or abort();
 sub abort {print get_help_message();exit 1;}
 sub get_help_message {return "zephyr [-h or --help] [-v or --version] \n";}
 sub get_about_message {return "A live reload tool for Links development.\n";}
+sub SetLoggerLevel {$conf =~ s/INFO/TRACE/;}
 if (defined $opts{v}) {VERSION_MESSAGE();exit 1;}
 if (defined $opts{h}) {abort();}
+if (defined $opts{d}) {SetLoggerLevel();}
 sub HELP_MESSAGE {print get_help_message();}
 sub VERSION_MESSAGE {print "Version $VERSION\n";}
 
 print "Firefox::Marionette version: $Firefox::Marionette::VERSION\n";
 
-my $linksBin;
+Log::Log4perl::init( \$conf );
 
-if ( `which links` ne "" ) {
-    $linksBin = "links";
-} elsif ( `which linx` ne "" ) {
-    $linksBin = "linx";
-} else {
-    # Premature exit if links/linx was not found on '$PATH'
-    print "Links wasn't discovered as valid binary.\nHINT: Add links to your path!\n";
-    exit;
-}
+my $linksBin = FindLinksBin();
+
 
 sub array2String {
     my $n = scalar(@_);
@@ -83,7 +96,8 @@ my $numOfFiles = keys %files;
 
 my $got_signal;
 local $SIG{INT} = sub {
-    #print "DEBUG Caught: @_";
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
+    $log->trace("Caught: @_");
     $got_signal = 1;
 };
 
@@ -99,8 +113,7 @@ my $parent_pid = "$$";
 defined( my $pid = fork() ) or die "failed to fork: $!";
 
 if ( $pid == 0 ) {
-    $actions{"links"}->();
-    exit;
+		$actions{"links"}->();
 }
 
 my $browser = Firefox::Marionette->new(sleep_time_in_ms => 5, visible => 1);
@@ -111,12 +124,10 @@ try {
     warn "Error navigating to URL: $_";
 };
 
-use Fcntl qw(:seek); # For SEEK_SET
+my $log = Log::Log4perl::get_logger("Zephyr::Logger");
 
-open(my $fh, '.links_output.log') or die "File '.links_output.log' can't be opened";
-
-my $confirming_links_started = 1;
-my $found_keyword = 0;
+my $get;
+my $pageLoaded = 1;
 
 for ( ; ; ) {
     if ($got_signal) {
@@ -124,55 +135,38 @@ for ( ; ; ) {
     } elsif (not( isBrowserOpen() )) {
         last;
     }
+		
+		if ( not $pageLoaded ) {
+				my $curl_result = system("curl -s -o /dev/null localhost:$port");
+				if ( $curl_result == 0 && isBrowserOpen() ) {
+						$log->info("refreshed page with updated content");
+						$browser->refresh();
+						$pageLoaded = 1;
+				}
+		}
 
-    if ( $confirming_links_started ) {
-        while (my $line = <$fh>) {
-            if ($line =~ /\QStarting server (2)?\E/) {
-                $found_keyword = 1;
-                last;
-            }
-        }
-
-        if ( $found_keyword ) {
-            if ( isBrowserOpen() ) {
-                print "New content!\n";
-                $browser->refresh();
-            }
-
-            $confirming_links_started = 0;
-            $found_keyword = 0;
-        }
-    }
 
     keys %files;
     while (my($f, $t) = each %files) {
         my $stat = callStat($f);
-        if ($t eq $stat) {
-            ;
-        } elsif ( $t eq -1 ) {
-            ; # FIXME If not found, often just still being update, could be handled better.
-        } else {
-            kill 'TERM', $pid;
-            waitpid $pid, 0;
+				if ( $t ne $stat ) {
+						kill 'TERM', $pid;
+						waitpid $pid, 0;
             $files{$f} = $stat; # Update mod time
-            print "DEBUG $f updated.\n";
-            defined( $pid = fork() ) or die "failed to fork: $!";
+						$log->info("$f updated. Restarting server and reloading browser.");
+						$pageLoaded = 0;
 
-            if ( $pid == 0 ) {
-                $actions{"links"}->();
-                exit;
-            }
-
-            # Reset fh
-            seek $fh, 0, 0 or die "Could not seek: $!";
-            truncate('.links_output.log', 0) or die "Failed to truncate: $!";
-            $confirming_links_started = 1;
-        }
+						defined( $pid = fork() ) or die "failed to fork: $!";
+						if ( $pid == 0 ) {
+								$actions{"links"}->();
+						}
+        } else {
+						;
+				}
     }
 }
 
 system("fuser -k $port/tcp");
-close($fh);
 
 exit;
 
@@ -188,35 +182,43 @@ sub isBrowserOpen {
 }
 
 sub callLinks {
-    # HACK Assuming files are in `core`.
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
+
+		# TODO fails to report errors from Links.
     system("fuser -k $port/tcp"); # Kill other process if on port
 
-    open(my $log_fh, '>', ".links_output.log") or die "Failed to open log file: $!";
-
-    open(STDOUT, '>&', $log_fh);
-    open(STDERR, '>&', $log_fh);
+		my $call = "$linksBin --session-exceptions --path=$linksPaths";
 
     if (defined $configFile) {
-        exec($linksBin, '--debug', '--session-exceptions', "--path=$linksPaths", "--config=$configFile",
-                $mainFile) or die "Failed to exec: $!";
-    } else {
-        exec($linksBin, '--debug', '--session-exceptions', "--path=$linksPaths",
-                $mainFile) or die "Failed to exec: $!";
-    }
+				$call .= " --config=$configFile";
+    } 
 
-    return;
+		$call .= " $mainFile";
+
+		$log->debug("calling Links as: $call");
+
+		exec($call) or die "Failed to exec: $!";
+
+    exit;
 }
 
 sub globFiles {
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
+
     my $fname = $File::Find::name;
     if (-d $fname) {
-        ; # Ignore
+        ; # Ignore, for, will need to TODO handle new files and stating directories is a good indicator
     }
     elsif (-e $fname) {
         my $dirname = dirname( $fname );
-        if ( $dirname eq '.' ) {
-            $dirname = undef;
-        }
+				if ( $dirname =~ /\.git/ ) { # Skip all hidden files?
+						$log->trace("skipping git file: $fname");
+						return;
+				}
+				if ( $dirname =~ /\.zephyr/ ) {
+						$log->trace("skipping zephyr file: $fname");
+						return;
+				}
         my $basefname = basename( $fname );
 
         if ( $basefname eq "config" ) {
@@ -233,17 +235,16 @@ sub globFiles {
             }
             close($fh);
 
-            if ( defined $dirname ) {
-                $directories{$dirname} = callStat($dirname);
-            }
+            $directories{$dirname} = callStat($dirname);
+						$log->trace("adding directory to watchlist: $dirname");
         }
 
         $files{$fname} = callStat($fname);
 
-        print "FILE: $fname\n";
+				$log->trace("adding file to watchlist: $fname");
     }
     else {
-        print "ERR: Unexpected type of file.\n";
+				$log->error("unexpected type of file: $fname");
         exit;
     }
 
@@ -294,6 +295,7 @@ sub parseConfig {
 }
 
 sub checkFoundFiles {
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
     unless (defined $configFile ) {
         print "If you have a config file name it `config` or edit this exe's config\n";
     } else {
@@ -303,12 +305,52 @@ sub checkFoundFiles {
 
     }
 
-    if ( $mainFile eq -1 ) {
-        print "No main file was discovered, try creating a file with `servePages()` in a main loop\n.";
-    } else {
+    if ( defined( $mainFile ) ) {
         print "Found a links driver/main file here: $mainFile\n";
+				return;
+		} else {
+				$log->fatal("No main file was discovered, try creating a file with `servePages()` in a main loop.");
+				exit;
     }
+}
+
+sub FindLinksBin {
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
+		my $linksBin;
+
+		my $out = `which links || which linx`;
+		chomp($out);
+		$out = basename($out);
+		if ( $out eq "links" ) {
+				$linksBin = "links";
+		} elsif ( $out eq "linx" ) {
+				$linksBin = "linx";
+		} else {
+				$log->fatal("Links wasn't discovered as valid binary.\nHINT: Add links to your path!");
+				exit;
+		}
+
+		return $linksBin;
+}
 
 
-    return;
+sub getloggerLevel {
+		my $log = Log::Log4perl::get_logger("Zephyr::Logger");
+		my $level = 0;
+
+		if ( $log->is_trace() ) {
+				$level++;
+		} elsif ( $log->is_debug() ) {
+				$level++;
+		} elsif ( $log->is_info () ) {
+				$level++;
+		} elsif ( $log->is_warn () ) {
+				$level++;
+		} elsif ( $log->is_error () ) {
+				$level++;
+		} elsif ( $log->is_fatal () ) {
+				$level++;
+		}
+
+		return $level;
 }

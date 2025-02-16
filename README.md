@@ -11,6 +11,19 @@ Zephyr is a lightweight piece of software that live reloads a Links project. Ins
 
 Uses PAR-packer to create a binary. But of course this can just be ran as a Perl script if you have the dependencies and perl installed on your machine.
 
+Requires the following pacakges:
+
+```perl
+use Net::EmptyPort qw<check_port>;
+use Log::Log4perl;
+use Firefox::Marionette();
+use Try::Tiny;
+```
+
+Also requires:
+
++ curl
+
 ``` bash
 pp -o zephyr zephyr.pl
 ```
