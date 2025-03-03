@@ -5,7 +5,6 @@ Zephyr is a lightweight piece of software that performs live reloads for a [Link
 ## Notes
  + Requires geckodriver for Firefox.
  + As well, currently only works for Firefox.
- + Mostly horribly broken but is convienent.
 
 ## Building
 
@@ -19,6 +18,8 @@ use Log::Log4perl;
 use Firefox::Marionette();
 use Try::Tiny;
 ```
+
+Firefox Marionette can be found here: https://github.com/david-dick/firefox-marionette.
 
 Also requires:
 
